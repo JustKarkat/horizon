@@ -117,6 +117,22 @@ pub struct Extras {
     pub target_details: bool,
     /// With them, the looked-at block or mob's coordinates.
     pub target_coordinates: bool,
+    /// Colored hearts: past ten hearts, health and absorption tint the heart
+    /// row one color per row of ten (`heart_colors`).
+    pub colored_hearts: bool,
+    /// Food details: the hunger row's readouts (`food_hud`), each its own
+    /// switch below the parent one.
+    pub food_details: bool,
+    /// The player's saturation, ghosted over the bar.
+    pub food_saturation: bool,
+    /// The exhaustion built up, a strip across the row.
+    pub food_exhaustion: bool,
+    /// What the held food would restore.
+    pub food_values: bool,
+    /// The health rows' colors, `#RRGGBB` (`heartColors`).
+    pub heart_colors: Vec<u32>,
+    /// The absorption rows' colors (`absorptionColors`).
+    pub absorption_colors: Vec<u32>,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -151,6 +167,13 @@ impl Default for Extras {
             discord_presence: true,
             target_details: false,
             target_coordinates: false,
+            colored_hearts: false,
+            food_details: false,
+            food_saturation: true,
+            food_exhaustion: true,
+            food_values: true,
+            heart_colors: crate::heart_colors::DEFAULT_HEALTH.to_vec(),
+            absorption_colors: crate::heart_colors::DEFAULT_ABSORPTION.to_vec(),
         }
     }
 }
@@ -227,6 +250,23 @@ impl Extras {
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
                 "targetDetails" => e.target_details = flag(e.target_details),
                 "targetCoordinates" => e.target_coordinates = flag(e.target_coordinates),
+                "coloredHearts" => e.colored_hearts = flag(e.colored_hearts),
+                "foodDetails" => e.food_details = flag(e.food_details),
+                "foodSaturation" => e.food_saturation = flag(e.food_saturation),
+                "foodExhaustion" => e.food_exhaustion = flag(e.food_exhaustion),
+                "foodValues" => e.food_values = flag(e.food_values),
+                "heartColors" if !value.is_empty() => {
+                    let parsed = crate::heart_colors::parse_colors(value);
+                    if !parsed.is_empty() {
+                        e.heart_colors = parsed;
+                    }
+                }
+                "absorptionColors" if !value.is_empty() => {
+                    let parsed = crate::heart_colors::parse_colors(value);
+                    if !parsed.is_empty() {
+                        e.absorption_colors = parsed;
+                    }
+                }
                 _ => {}
             }
         }
@@ -234,7 +274,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\ntargetDetails:{}\ntargetCoordinates:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\ncoloredHearts:{}\nfoodDetails:{}\nfoodSaturation:{}\nfoodExhaustion:{}\nfoodValues:{}\ntargetDetails:{}\ntargetCoordinates:{}\nheartColors:{}\nabsorptionColors:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -270,6 +310,13 @@ impl Extras {
             bool_text(self.discord_presence),
             bool_text(self.target_details),
             bool_text(self.target_coordinates),
+            bool_text(self.colored_hearts),
+            bool_text(self.food_details),
+            bool_text(self.food_saturation),
+            bool_text(self.food_exhaustion),
+            bool_text(self.food_values),
+            crate::heart_colors::colors_to_text(&self.heart_colors),
+            crate::heart_colors::colors_to_text(&self.absorption_colors),
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -401,6 +448,11 @@ pub enum Item {
     DiscordPresence,
     TargetDetails,
     TargetCoordinates,
+    ColoredHearts,
+    FoodDetails,
+    FoodSaturation,
+    FoodExhaustion,
+    FoodValues,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -409,6 +461,12 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Err("Lighting"),
         Ok(Fullbright),
         Ok(DynamicLights),
+        Err("HUD"),
+        Ok(ColoredHearts),
+        Ok(FoodDetails),
+        Ok(FoodSaturation),
+        Ok(FoodExhaustion),
+        Ok(FoodValues),
         Err("Inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),
@@ -436,6 +494,11 @@ impl Item {
             Item::DiscordPresence => "Discord Rich Presence",
             Item::TargetDetails => "Target details",
             Item::TargetCoordinates => "Target coordinates",
+            Item::ColoredHearts => "Colored hearts",
+            Item::FoodDetails => "Food details",
+            Item::FoodSaturation => "Saturation ghost",
+            Item::FoodExhaustion => "Exhaustion strip",
+            Item::FoodValues => "Held food values",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -444,9 +507,10 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
+            FoodSaturation | FoodExhaustion | FoodValues => FoodDetails,
             TargetCoordinates => TargetDetails,
             Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence | TargetDetails => {
+            | AgentControl | DiscordPresence | TargetDetails | ColoredHearts | FoodDetails => {
                 return None;
             }
         })
@@ -486,6 +550,21 @@ impl Item {
                 "What the crosshair is over, above the hotbar: the block's name, or the mob's name and its health."
             }
             Item::TargetCoordinates => "The looked-at block or mob's coordinates under its name.",
+            Item::ColoredHearts => {
+                "Past ten hearts, health and absorption tint the heart row one color per row of ten instead of adding rows. The colors are the heartColors and absorptionColors lists in horizon-extras.txt."
+            }
+            Item::FoodDetails => {
+                "Readouts on the hunger bar, each with its own switch: the saturation carried, the exhaustion built up, and what the held food would restore."
+            }
+            Item::FoodSaturation => {
+                "The player's saturation, a golden ghost over the hunger bar's first points."
+            }
+            Item::FoodExhaustion => {
+                "The exhaustion built up, a dark strip across the hunger bar that fills before the saturation drops."
+            }
+            Item::FoodValues => {
+                "The hunger and saturation the held food would restore, ghosted after the bar's own points."
+            }
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -514,6 +593,11 @@ impl Item {
             Item::DiscordPresence => e.discord_presence,
             Item::TargetDetails => e.target_details,
             Item::TargetCoordinates => e.target_coordinates,
+            Item::ColoredHearts => e.colored_hearts,
+            Item::FoodDetails => e.food_details,
+            Item::FoodSaturation => e.food_saturation,
+            Item::FoodExhaustion => e.food_exhaustion,
+            Item::FoodValues => e.food_values,
             _ => return None,
         })
     }
@@ -542,6 +626,11 @@ impl Item {
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
             Item::TargetDetails => e.target_details = !e.target_details,
             Item::TargetCoordinates => e.target_coordinates = !e.target_coordinates,
+            Item::ColoredHearts => e.colored_hearts = !e.colored_hearts,
+            Item::FoodDetails => e.food_details = !e.food_details,
+            Item::FoodSaturation => e.food_saturation = !e.food_saturation,
+            Item::FoodExhaustion => e.food_exhaustion = !e.food_exhaustion,
+            Item::FoodValues => e.food_values = !e.food_values,
             Item::SortKey => {}
         }
     }
@@ -592,6 +681,13 @@ mod tests {
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
         e.discord_presence = false;
+        e.colored_hearts = true;
+        e.food_details = true;
+        e.food_saturation = false;
+        e.food_exhaustion = false;
+        e.food_values = false;
+        e.heart_colors = vec![0xFF_1313, 0x38_C8FF];
+        e.absorption_colors = vec![0xFF_C832];
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
 

@@ -6197,6 +6197,29 @@ impl Game<'_> {
                 };
                 let draws = self.health_hud.layout(&inputs, wi, hi);
                 hud_layout::paint(&mut batch, atlas, &draws);
+                // The food details extra's hunger-row overlays (`food_hud`),
+                // over the row the layout just drew.
+                let e = &self.settings.extras;
+                if e.food_details {
+                    let held = self.inventory[self.selected]
+                        .as_ref()
+                        .and_then(|stack| self.res.items().get(&stack.item))
+                        .and_then(|info| info.food)
+                        .map(|(nutrition, modifier)| (nutrition as i32, modifier));
+                    let inputs = horizon_client::food_hud::Inputs {
+                        w: wi,
+                        h: hi,
+                        food: p.health.food.food,
+                        saturation: p.health.food.saturation,
+                        exhaustion: p.health.food.exhaustion,
+                        saturation_on: e.food_saturation,
+                        exhaustion_on: e.food_exhaustion,
+                        values_on: e.food_values,
+                        held,
+                    };
+                    let draws = horizon_client::food_hud::layout(&inputs);
+                    hud_layout::paint(&mut batch, atlas, &draws);
+                }
                 bar_height = self
                     .health_hud
                     .left_height

@@ -89,6 +89,20 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
 - The idea is ported, not a mod's code. It draws what the game already
   picks for the block outline and attacks, so it costs nothing while off.
 
+### Food details (`foodDetails`, default off)
+- Three readouts drawn over the vanilla hunger row, each with its own switch
+  below the parent one (all on when the parent is on):
+  - `foodSaturation`: the player's saturation as a golden ghost of the
+    drumsticks over the bar's first points (vanilla never shows saturation).
+  - `foodExhaustion`: the exhaustion built up as a dark strip across the row,
+    growing from its left edge; at 4.0 it covers the row, which is when
+    vanilla's saturation starts dropping.
+  - `foodValues`: what the held food would restore, ghosted after the bar's
+    own points — pale drumsticks for the hunger, gold over them for the
+    saturation (`nutrition * saturation * 2`, capped at the bar's end).
+- The ideas are ported, not a mod's code. The overlays draw over the icons
+  the game already draws and cost nothing while the extra is off.
+
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a
   countdown "Reconnecting in N s" with a Cancel button, then a new connection

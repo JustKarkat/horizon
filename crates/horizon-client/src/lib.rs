@@ -67,6 +67,8 @@ pub mod fire_render;
 pub mod first_person;
 pub mod flatgen;
 pub mod fog;
+pub mod food_hud;
+pub mod heart_colors;
 pub mod font;
 pub mod friends_screen;
 pub mod furnace;
