@@ -90,6 +90,15 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
   whenever the team's name tag visibility would hide it, exactly as the other
   players' tags (`game/names.rs`, `own_name_tag`). Client-only: nothing is sent.
 
+### Target details (`targetDetails`, default off)
+- What the crosshair is over, as a small readout centered above the hotbar:
+  the block's name, or the mob's name with its health under it, colored
+  green toward red by the fraction.
+- `targetCoordinates` (default off) adds the looked-at block or mob's block
+  coordinates as a second line.
+- The idea is ported, not a mod's code. It draws what the game already
+  picks for the block outline and attacks, so it costs nothing while off.
+
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a
   countdown "Reconnecting in N s" with a Cancel button, then a new connection

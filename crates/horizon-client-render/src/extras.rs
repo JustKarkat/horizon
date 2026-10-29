@@ -114,6 +114,11 @@ pub struct Extras {
     pub agent_control: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
+    /// Target details: what the crosshair is over, above the hotbar
+    /// (`target_info`).
+    pub target_details: bool,
+    /// With them, the looked-at block or mob's coordinates.
+    pub target_coordinates: bool,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -147,6 +152,8 @@ impl Default for Extras {
             no_ai: false,
             agent_control: false,
             discord_presence: true,
+            target_details: false,
+            target_coordinates: false,
         }
     }
 }
@@ -222,6 +229,8 @@ impl Extras {
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
+                "targetDetails" => e.target_details = flag(e.target_details),
+                "targetCoordinates" => e.target_coordinates = flag(e.target_coordinates),
                 _ => {}
             }
         }
@@ -229,7 +238,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\ntargetDetails:{}\ntargetCoordinates:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -264,6 +273,8 @@ impl Extras {
             bool_text(self.no_ai),
             bool_text(self.agent_control),
             bool_text(self.discord_presence),
+            bool_text(self.target_details),
+            bool_text(self.target_coordinates),
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -394,6 +405,8 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
+    TargetDetails,
+    TargetCoordinates,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -411,6 +424,9 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SortKey),
         Err("Multiplayer"),
         Ok(AutoReconnect),
+        Err("Target"),
+        Ok(TargetDetails),
+        Ok(TargetCoordinates),
     ]
 }
 impl Item {
@@ -427,6 +443,8 @@ impl Item {
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::DiscordPresence => "Discord Rich Presence",
+            Item::TargetDetails => "Target details",
+            Item::TargetCoordinates => "Target coordinates",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -435,8 +453,9 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
+            TargetCoordinates => TargetDetails,
             Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            | AgentControl | DiscordPresence | TargetDetails => {
                 return None;
             }
         })
@@ -475,6 +494,10 @@ impl Item {
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
+            Item::TargetDetails => {
+                "What the crosshair is over, above the hotbar: the block's name, or the mob's name and its health."
+            }
+            Item::TargetCoordinates => "The looked-at block or mob's coordinates under its name.",
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -483,7 +506,8 @@ impl Item {
         match self {
             Item::Fullbright => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
-            Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort => {
+            Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort
+            | Item::TargetDetails => {
                 Some(Cost::None)
             }
             _ => None,
@@ -502,6 +526,8 @@ impl Item {
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::DiscordPresence => e.discord_presence,
+            Item::TargetDetails => e.target_details,
+            Item::TargetCoordinates => e.target_coordinates,
             _ => return None,
         })
     }
@@ -529,6 +555,8 @@ impl Item {
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
+            Item::TargetDetails => e.target_details = !e.target_details,
+            Item::TargetCoordinates => e.target_coordinates = !e.target_coordinates,
             Item::SortKey => {}
         }
     }
