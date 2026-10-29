@@ -1301,10 +1301,16 @@ pub struct UiResources {
 }
 impl UiResources {
     /// From a resource root layering packs over `defaults`, the game's own
-    /// resources (`root` itself when no pack is on).
-    pub fn load(root: &std::path::Path, defaults: &std::path::Path) -> Result<Self> {
+    /// resources (`root` itself when no pack is on). `hearts` bakes the
+    /// colored hearts extra's tinted heart sprites (`heart_colors`); it is
+    /// always given, so turning the extra on needs no restart.
+    pub fn load(
+        root: &std::path::Path,
+        defaults: &std::path::Path,
+        hearts: Option<&horizon_client::heart_colors::Palette>,
+    ) -> Result<Self> {
         Ok(Self {
-            atlas: HudAtlas::build_over(root, defaults)?,
+            atlas: HudAtlas::build_over_hearts(root, defaults, hearts)?,
             panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root)),
         })
     }
@@ -6194,6 +6200,7 @@ impl Game<'_> {
                     max_air: 300,
                     under_water,
                     vehicle_hearts,
+                    colored: self.settings.extras.colored_hearts,
                 };
                 let draws = self.health_hud.layout(&inputs, wi, hi);
                 hud_layout::paint(&mut batch, atlas, &draws);
@@ -14496,6 +14503,13 @@ fn load_resources(
     publish: &mut dyn FnMut(UiResources, &std::path::Path),
 ) -> Result<Loaded> {
     let requested_root = root.clone();
+    // The colored hearts extra's tinted sprites, from its color lists
+    // (`heart_colors`): always baked, whatever the switch says.
+    let hearts = horizon_client::heart_colors::Palette::new(
+        &settings.extras.heart_colors,
+        &settings.extras.absorption_colors,
+    );
+    let hearts = Some(&hearts);
     let threads = settings.horizon.worker_threads();
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
@@ -14503,7 +14517,7 @@ fn load_resources(
     let mut loaded_gui = None;
     let mut ui_ready = false;
     let mut pack_error = None;
-    let ui = match UiResources::load(&root, vanilla_root) {
+    let ui = match UiResources::load(&root, vanilla_root, hearts) {
         Ok(ui) => Some(ui),
         // Minecraft.rollbackResourcePacks: the packs' textures don't fit, start
         // with the game's own resources.
@@ -14555,7 +14569,7 @@ fn load_resources(
     let render = Arc::new(render);
     // The menu bundle must come from the same root as the world bundle.
     if !ui_ready || root != requested_root {
-        let ui = UiResources::load(&root, vanilla_root)?;
+        let ui = UiResources::load(&root, vanilla_root, hearts)?;
         if menu {
             horizon_client::telemetry::mark_ui_ready();
             log::info!(
