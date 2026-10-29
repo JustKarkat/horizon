@@ -1038,6 +1038,16 @@ impl HudBatch {
         let text = crate::bidi::visual(&text);
         let font = &atlas.font;
         let alpha = (color >> 24) as u8;
+        // ARGB.scaleRGB(color, 0.25): the default shadow's colour.
+        let shade = |c: u32| {
+            let b = c.to_le_bytes();
+            rgba(
+                (f32::from(b[0]) * 0.25) as u8,
+                (f32::from(b[1]) * 0.25) as u8,
+                (f32::from(b[2]) * 0.25) as u8,
+                b[3],
+            )
+        };
         let mut glyphs = Vec::new();
         let mut cursor = x;
         let mut previous = None;
@@ -1057,12 +1067,30 @@ impl HudBatch {
             let c = style.color.map_or(color, |rgb| {
                 rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, alpha)
             });
+            // Font.PreparedTextBuilder.getShadowColor: an explicit
+            // `shadow_color` keeps its colour, its alpha scaled by the text's
+            // while that is translucent; otherwise the shadow is the default
+            // scaled colour only when one is drawn. `0` (`NO_SHADOW`) is none.
+            let shadow_color = style
+                .shadow_color
+                .map_or(if shadow { shade(c) } else { 0 }, |s| {
+                    let text_alpha = f32::from(c.to_le_bytes()[3]) / 255.0;
+                    if text_alpha != 1.0 {
+                        let shadow_alpha = f32::from(s.to_le_bytes()[3]) / 255.0;
+                        // ARGB.as8BitChannel(textAlpha * shadowAlpha), floor.
+                        let blended = (text_alpha * shadow_alpha * 255.0).floor() as u32;
+                        blended << 24 | s & 0x00FF_FFFF
+                    } else {
+                        s
+                    }
+                });
             let bold = style.is_bold();
             let advance = g.advance + if bold { g.offset } else { 0.0 };
             glyphs.push((
                 cursor,
                 g,
                 c,
+                shadow_color,
                 bold,
                 style.is_italic(),
                 style.underlined == Some(true),
@@ -1074,26 +1102,20 @@ impl HudBatch {
         }
         self.patches.extend(font.take_patches());
         let white = font.white();
-        let passes: &[bool] = if shadow { &[true, false] } else { &[false] };
-        // ARGB.scaleRGB(color, 0.25): the shadow's colour.
-        let shade = |c: u32| {
-            let b = c.to_le_bytes();
-            rgba(
-                (f32::from(b[0]) * 0.25) as u8,
-                (f32::from(b[1]) * 0.25) as u8,
-                (f32::from(b[2]) * 0.25) as u8,
-                b[3],
-            )
-        };
+        // The shadow pass runs regardless of `drawShadow`: the per-glyph
+        // colour is `NO_SHADOW` unless one is drawn or the style sets it.
+        let passes: &[bool] = &[true, false];
         for &is_shadow in passes {
-            for &(gx, g, c, bold, italic, underline, strike, first, advance) in &glyphs {
-                // In the world a glyph whose shadow is 0 has none (hasShadow).
-                let has_shadow = shadow && !(world && shade(c) == 0);
+            for &(gx, g, c, glyph_shadow, bold, italic, underline, strike, first, advance) in
+                &glyphs
+            {
+                // BakedSheetGlyph.hasShadow: a shadow colour of 0 is none.
+                let has_shadow = glyph_shadow != 0;
                 if is_shadow && !has_shadow {
                     continue;
                 }
                 let (dx, col) = if is_shadow {
-                    (g.offset, shade(c))
+                    (g.offset, glyph_shadow)
                 } else {
                     (0.0, c)
                 };

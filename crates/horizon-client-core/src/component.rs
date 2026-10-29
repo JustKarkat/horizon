@@ -195,6 +195,29 @@ fn object_style(o: &serde_json::Map<String, Value>) -> Style {
                 .and_then(|h| u32::from_str_radix(h, 16).ok())
         });
     }
+    // ExtraCodecs.ARGB_COLOR_CODEC: an int, or [r, g, b, a] floats
+    // (ARGB.colorFromFloat) as the scoreboard command writes them.
+    style.shadow_color = match o.get("shadow_color") {
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .and_then(|v| i32::try_from(v).ok())
+            .map(crate::text::shadow_from_argb),
+        Some(Value::Array(list)) if list.len() == 4 => {
+            let channel = |v: &Value| v.as_f64().map(|f| f as f32);
+            match (
+                channel(&list[0]),
+                channel(&list[1]),
+                channel(&list[2]),
+                channel(&list[3]),
+            ) {
+                (Some(r), Some(g), Some(b), Some(a)) => {
+                    Some(crate::text::shadow_from_floats(r, g, b, a))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
     let flag = |k: &str| o.get(k).and_then(Value::as_bool);
     style.bold = flag("bold");
     style.italic = flag("italic");
@@ -401,5 +424,61 @@ mod tests {
         assert_eq!(v["text"], Value::String("Infinity".into()));
         let (v, _) = parse_snbt("{n:1.5}").unwrap();
         assert_eq!(v["n"], Value::from(1.5));
+    }
+
+    #[test]
+    fn shadow_colors_parse_as_ints_and_float_lists() {
+        use crate::text::{shadow_from_argb, shadow_from_floats};
+        // The int form: opaque red (0xFFFF0000).
+        let (v, _) = parse_snbt("{text:'S',shadow_color:-65536}").unwrap();
+        let t = to_text(&v, &mut |_| Text::empty());
+        assert_eq!(
+            t.spans[0].style.shadow_color,
+            Some(shadow_from_argb(-65536))
+        );
+        // The float list the scoreboard command writes: [r, g, b, a].
+        let (v, _) = parse_snbt("{text:'S',shadow_color:[1.0,0.0,0.0,1.0]}").unwrap();
+        let t = to_text(&v, &mut |_| Text::empty());
+        assert_eq!(
+            t.spans[0].style.shadow_color,
+            Some(shadow_from_floats(1.0, 0.0, 0.0, 1.0))
+        );
+        assert_eq!(
+            t.spans[0].style.shadow_color,
+            Some(shadow_from_argb(-65536))
+        );
+        // Half-transparent green.
+        let (v, _) = parse_snbt("{text:'S',shadow_color:[0.0,1.0,0.0,0.5]}").unwrap();
+        let t = to_text(&v, &mut |_| Text::empty());
+        let [r, g, b, a] = t.spans[0].style.shadow_color.unwrap().to_le_bytes();
+        assert_eq!((r, g, b, a), (0, 255, 0, 127));
+        // Not a colour: none.
+        let (v, _) = parse_snbt("{text:'S',shadow_color:'red'}").unwrap();
+        let t = to_text(&v, &mut |_| Text::empty());
+        assert_eq!(t.spans[0].style.shadow_color, None);
+        // Back to vanilla's JSON as the packed int, which a re-read keeps.
+        let (v, _) = parse_snbt("{text:'S',shadow_color:[1.0,0.0,0.0,1.0]}").unwrap();
+        let t = to_text(&v, &mut |_| Text::empty());
+        assert_eq!(t.component()["shadow_color"], Value::from(-65536_i64));
+        let again = to_text(&t.component(), &mut |_| Text::empty());
+        assert_eq!(
+            again.spans[0].style.shadow_color,
+            t.spans[0].style.shadow_color
+        );
+        // A colour code keeps the shadow (Style.applyLegacyFormat), and so
+        // does `§r` (back to the span's own style).
+        let (v, _) = parse_snbt("{text:'§l bold',shadow_color:[1.0,0.0,0.0,1.0]}").unwrap();
+        let t = to_text(&v, &mut |_| Text::empty()).resolve_legacy();
+        assert_eq!(
+            t.spans[0].style.shadow_color,
+            Some(shadow_from_argb(-65536))
+        );
+        assert!(t.spans[0].style.is_bold());
+        let (v, _) = parse_snbt("{text:'§r rest',shadow_color:[1.0,0.0,0.0,1.0]}").unwrap();
+        let t = to_text(&v, &mut |_| Text::empty()).resolve_legacy();
+        assert_eq!(
+            t.spans[0].style.shadow_color,
+            Some(shadow_from_argb(-65536))
+        );
     }
 }

@@ -129,7 +129,7 @@ impl StackData {
     pub fn set_loot_name(&mut self, id: &str, text: &serde_json::Value) {
         let tag = horizon_client_core::scoreboard::json_to_tag(text);
         if id == "minecraft:custom_name" {
-            self.custom_name = read_text(&tag);
+            self.set_custom_name(Some(&tag));
         } else {
             self.set_other(id, Some(tag));
         }
@@ -148,9 +148,19 @@ impl StackData {
                     _ => None,
                 };
             }
-            "minecraft:custom_name" => self.custom_name = tag.as_ref().and_then(read_text),
+            "minecraft:custom_name" => self.set_custom_name(tag.as_ref()),
             _ => self.set_other(id, tag),
         }
+    }
+    /// The plain text of `custom_name`, keeping a styled component's raw
+    /// value in `other` for the rendering that reads its styles.
+    fn set_custom_name(&mut self, tag: Option<&Tag>) {
+        self.custom_name = tag.and_then(read_text);
+        let styled = tag.is_some_and(styled_custom_name);
+        self.set_other(
+            "minecraft:custom_name",
+            styled.then(|| tag.expect("styled tag").clone()),
+        );
     }
     /// Set (or with None remove) an unmodelled component.
     pub fn set_other(&mut self, id: &str, value: Option<Tag>) {
@@ -292,6 +302,11 @@ impl ItemStack {
     pub fn custom_name(&self) -> Option<&str> {
         self.data().and_then(|d| d.custom_name.as_deref())
     }
+    /// `custom_name`'s raw component when it is a styled one (a compound or
+    /// list): the styles the tooltip and the held-name popup draw.
+    pub fn custom_name_tag(&self) -> Option<&Tag> {
+        self.data()?.other("minecraft:custom_name")
+    }
     /// `minecraft:item_name` in the current language (`getItemName`'s
     /// component). It stays in the patch as loaded, so a translatable name
     /// saves and reaches clients unchanged; the ominous banner's is modelled
@@ -402,6 +417,22 @@ fn filterable_text(t: &Tag) -> Option<String> {
         None => read_text(t),
     }
 }
+/// Whether a `custom_name` component keeps its styles: anything but a plain
+/// string, and not a compound that is one default-styled literal span — the
+/// vanilla codec writes that back as a plain string (`{"text":"Cool"}`
+/// saves as `"Cool"`), so it has no raw copy to keep.
+fn styled_custom_name(t: &Tag) -> bool {
+    if matches!(t, Tag::String(_)) {
+        return false;
+    }
+    let spans = &horizon_client_core::component::name_text(t).spans;
+    match spans.as_slice() {
+        [] => false,
+        [one] => one.style != horizon_client_core::text::Style::default(),
+        _ => true,
+    }
+}
+
 fn read_text(t: &Tag) -> Option<String> {
     match t {
         Tag::String(s) => Some(s.to_string_lossy()),
@@ -590,7 +621,9 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
         if d.repair_cost > 0 {
             entries.push(("minecraft:repair_cost", Tag::Int(d.repair_cost as i32)));
         }
-        if let Some(name) = &d.custom_name {
+        if let Some(raw) = d.other("minecraft:custom_name") {
+            entries.push(("minecraft:custom_name", raw.clone()));
+        } else if let Some(name) = &d.custom_name {
             entries.push(("minecraft:custom_name", Tag::String(name.as_str().into())));
         }
         if let Some(potion) = &d.potion {
@@ -929,6 +962,10 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
                     || (key == "minecraft:tooltip_display" && v == &ominous_tooltip_display()));
             if !MODELLED.contains(&key.as_str()) && !ominous_part {
                 data.other.push((key, v.clone()));
+            } else if key == "minecraft:custom_name" && styled_custom_name(v) {
+                // A styled custom name keeps its raw component for the
+                // rendering that reads its styles (`set_custom_name`).
+                data.other.push((key, v.clone()));
             }
         }
         data.other.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1023,6 +1060,33 @@ mod tests {
         assert_eq!(
             extra.and_then(|d| d.custom_name.clone()).as_deref(),
             Some("Games Right click")
+        );
+    }
+
+    #[test]
+    fn styled_custom_names_keep_their_component() {
+        let styled = Tag::compound([
+            ("bold", Tag::Byte(1)),
+            ("color", Tag::String("red".into())),
+            ("text", Tag::String("Test".into())),
+        ]);
+        let components = Tag::compound([("minecraft:custom_name", styled.clone())]);
+        let (_, extra) = decode_components(Some(&components));
+        let data = extra.expect("data");
+        // The plain text for logic, the raw tag for the styled rendering.
+        assert_eq!(data.custom_name.as_deref(), Some("Test"));
+        assert_eq!(data.other("minecraft:custom_name"), Some(&styled));
+        // It saves back unchanged; a plain name stays a plain string.
+        let packed = components_tag(0, Some(&data)).expect("components");
+        assert_eq!(packed.get("minecraft:custom_name"), Some(&styled));
+        let plain = Tag::compound([("minecraft:custom_name", Tag::String("Plain".into()))]);
+        let (_, extra) = decode_components(Some(&plain));
+        let data = extra.expect("data");
+        assert_eq!(data.other("minecraft:custom_name"), None);
+        let packed = components_tag(0, Some(&data)).expect("components");
+        assert_eq!(
+            packed.get("minecraft:custom_name"),
+            Some(&Tag::String("Plain".into()))
         );
     }
 

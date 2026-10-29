@@ -1712,6 +1712,18 @@ impl Game<'_> {
             _ => u32::MAX,
         }
     }
+    /// `ItemStack.getHoverName` as its component: the custom name, a written
+    /// book's title or the item name component with their styles kept, else
+    /// the item's or potion's name (`getStyledHoverName` adds the rest).
+    pub(super) fn stack_hover_name_text(&self, stack: &ItemStack) -> horizon_client::text::Text {
+        if let Some(tag) = stack.custom_name_tag() {
+            return horizon_client::component::name_text(tag);
+        }
+        if let Some(tag) = stack.data().and_then(|d| d.other("minecraft:item_name")) {
+            return horizon_client::component::name_text(tag);
+        }
+        horizon_client::text::Text::legacy(&self.stack_hover_name(stack))
+    }
     /// `ItemStack.getHoverName`: the custom name, a written book's title, the
     /// item name component, else the item's or potion's name.
     fn stack_hover_name(&self, stack: &ItemStack) -> String {
@@ -1755,12 +1767,13 @@ impl Game<'_> {
         let display = horizon_client::item_tooltip::TooltipDisplay::for_stack(stack);
         let mut lines = Vec::new();
         if !nested && display.name_visible(self.screen == Screen::Creative) {
-            // `getStyledHoverName`: a custom name is italic.
-            let name = self.stack_hover_name(stack);
+            // `getStyledHoverName`: the components' own styles over the
+            // rarity colour, italic when the name is custom.
+            let name = self.stack_hover_name_text(stack);
             let name = if stack.custom_name().is_some() {
-                horizon_client::text::Text::literal(name).italic()
+                name.italic()
             } else {
-                horizon_client::text::Text::legacy(&name)
+                name
             };
             lines.push((name, color));
         }

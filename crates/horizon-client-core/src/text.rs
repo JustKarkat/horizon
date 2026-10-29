@@ -62,6 +62,9 @@ pub enum ClickEvent {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Style {
     pub color: Option<u32>,
+    /// `Style.shadowColor` (the component's `shadow_color`): the glyph
+    /// shadows' colour as `rgba()`'s bytes, or `0` (`NO_SHADOW`) for none.
+    pub shadow_color: Option<u32>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
     pub underlined: Option<bool>,
@@ -92,6 +95,7 @@ impl Style {
     /// Fill unset fields from `base` (Style.applyTo).
     pub fn inherit(&mut self, base: &Style) {
         self.color = self.color.or(base.color);
+        self.shadow_color = self.shadow_color.or(base.shadow_color);
         self.bold = self.bold.or(base.bold);
         self.italic = self.italic.or(base.italic);
         self.underlined = self.underlined.or(base.underlined);
@@ -490,8 +494,9 @@ impl Text {
 }
 
 /// The style fields of a component's JSON.
-const STYLE_KEYS: [&str; 10] = [
+const STYLE_KEYS: [&str; 11] = [
     "color",
+    "shadow_color",
     "bold",
     "italic",
     "underlined",
@@ -511,6 +516,10 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
             .find(|n| n.2 == c)
             .map_or_else(|| format!("#{c:06X}"), |n| n.1.to_owned());
         out.push(("color".to_owned(), name.into()));
+    }
+    if let Some(s) = style.shadow_color {
+        // ExtraCodecs.ARGB_COLOR_CODEC: the packed ARGB int.
+        out.push(("shadow_color".to_owned(), Value::from(shadow_argb(s))));
     }
     for (key, flag) in [
         ("bold", style.bold),
@@ -562,6 +571,33 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
         out.push(("font".to_owned(), font.clone().into()));
     }
     out
+}
+
+/// A shadow colour as `rgba()`'s bytes as the packed ARGB int vanilla's
+/// codecs take (ExtraCodecs.ARGB_COLOR_CODEC).
+pub fn shadow_argb(shadow: u32) -> i32 {
+    let [r, g, b, a] = shadow.to_le_bytes();
+    ((u32::from(a) << 24) | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)) as i32
+}
+
+/// The packed ARGB int of vanilla's `shadow_color` as little-endian RGBA
+/// bytes (`Style.Serializer` reads an int).
+pub fn shadow_from_argb(argb: i32) -> u32 {
+    let argb = argb as u32;
+    u32::from_le_bytes([
+        (argb >> 16) as u8,
+        (argb >> 8) as u8,
+        argb as u8,
+        (argb >> 24) as u8,
+    ])
+}
+
+/// The four floats of vanilla's `shadow_color` list form as little-endian
+/// RGBA bytes (`ARGB.colorFromFloat(alpha, r, g, b)` over
+/// `as8BitChannel = floor(v * 255)`).
+pub fn shadow_from_floats(r: f32, g: f32, b: f32, a: f32) -> u32 {
+    let channel = |v: f32| (v * 255.0).floor() as i32 as u8;
+    u32::from_le_bytes([channel(r), channel(g), channel(b), channel(a)])
 }
 
 /// `Style.applyLegacyFormat` for the code after a `§`, `§r` going back to

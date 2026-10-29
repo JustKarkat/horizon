@@ -47,9 +47,9 @@ impl Game<'_> {
         let rarity = item_tooltip::rarity(stack, &default_rarity);
         Some(HeldName {
             item: stack.item.to_string(),
-            hover_name: Text::literal(item_tooltip::name_line(stack, &|key| {
-                self.pack.names.display_get(key)
-            })),
+            // `Hud.tick` compares `getHoverName`; `ToolHighlight.draw` adds
+            // the rarity colour and the custom-name italic over its styles.
+            hover_name: self.stack_hover_name_text(stack),
             rarity_color: match rarity {
                 "uncommon" => text::YELLOW,
                 "rare" => text::AQUA,
