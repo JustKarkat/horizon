@@ -114,6 +114,13 @@ pub struct Extras {
     pub agent_control: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
+    /// Colored hearts: past ten hearts, health and absorption tint the heart
+    /// row one color per row of ten (`heart_colors`).
+    pub colored_hearts: bool,
+    /// The health rows' colors, `#RRGGBB` (`heartColors`).
+    pub heart_colors: Vec<u32>,
+    /// The absorption rows' colors (`absorptionColors`).
+    pub absorption_colors: Vec<u32>,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -147,6 +154,9 @@ impl Default for Extras {
             no_ai: false,
             agent_control: false,
             discord_presence: true,
+            colored_hearts: false,
+            heart_colors: crate::heart_colors::DEFAULT_HEALTH.to_vec(),
+            absorption_colors: crate::heart_colors::DEFAULT_ABSORPTION.to_vec(),
         }
     }
 }
@@ -222,6 +232,19 @@ impl Extras {
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
+                "coloredHearts" => e.colored_hearts = flag(e.colored_hearts),
+                "heartColors" if !value.is_empty() => {
+                    let parsed = crate::heart_colors::parse_colors(value);
+                    if !parsed.is_empty() {
+                        e.heart_colors = parsed;
+                    }
+                }
+                "absorptionColors" if !value.is_empty() => {
+                    let parsed = crate::heart_colors::parse_colors(value);
+                    if !parsed.is_empty() {
+                        e.absorption_colors = parsed;
+                    }
+                }
                 _ => {}
             }
         }
@@ -229,7 +252,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\ncoloredHearts:{}\nheartColors:{}\nabsorptionColors:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -264,6 +287,9 @@ impl Extras {
             bool_text(self.no_ai),
             bool_text(self.agent_control),
             bool_text(self.discord_presence),
+            bool_text(self.colored_hearts),
+            crate::heart_colors::colors_to_text(&self.heart_colors),
+            crate::heart_colors::colors_to_text(&self.absorption_colors),
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -394,6 +420,7 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
+    ColoredHearts,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -404,6 +431,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(DynamicLights),
         Err("Third person"),
         Ok(OwnNameTag),
+        Err("HUD"),
+        Ok(ColoredHearts),
         Err("Inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),
@@ -427,6 +456,7 @@ impl Item {
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::DiscordPresence => "Discord Rich Presence",
+            Item::ColoredHearts => "Colored hearts",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -436,7 +466,7 @@ impl Item {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
             Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            | AgentControl | DiscordPresence | ColoredHearts => {
                 return None;
             }
         })
@@ -475,6 +505,9 @@ impl Item {
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
+            Item::ColoredHearts => {
+                "Past ten hearts, health and absorption tint the heart row one color per row of ten instead of adding rows. The colors are the heartColors and absorptionColors lists in horizon-extras.txt."
+            }
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -483,7 +516,8 @@ impl Item {
         match self {
             Item::Fullbright => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
-            Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort => {
+            Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort
+            | Item::ColoredHearts => {
                 Some(Cost::None)
             }
             _ => None,
@@ -502,6 +536,7 @@ impl Item {
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::DiscordPresence => e.discord_presence,
+            Item::ColoredHearts => e.colored_hearts,
             _ => return None,
         })
     }
@@ -529,6 +564,7 @@ impl Item {
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
+            Item::ColoredHearts => e.colored_hearts = !e.colored_hearts,
             Item::SortKey => {}
         }
     }
@@ -552,6 +588,8 @@ mod tests {
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag);
         assert!(d.discord_presence);
+        assert!(!d.colored_hearts);
+        assert_eq!(d.heart_colors.first(), Some(&0xFF_1313));
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
         let mut e = d.clone();
@@ -581,7 +619,13 @@ mod tests {
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
         e.discord_presence = false;
+        e.colored_hearts = true;
+        e.heart_colors = vec![0xFF_1313, 0x38_C8FF];
+        e.absorption_colors = vec![0xFF_C832];
         assert_eq!(Extras::parse(&e.serialize()), e);
+        // A list that isn't colors keeps the defaults.
+        assert_eq!(Extras::parse("heartColors:zebra").heart_colors.len(), 8);
+        assert_eq!(Extras::parse("heartColors:").heart_colors.len(), 8);
     }
 
     #[test]
