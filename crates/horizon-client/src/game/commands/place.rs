@@ -14,6 +14,28 @@ fn num(n: impl std::fmt::Display) -> Text {
     Text::literal(n.to_string())
 }
 
+/// What `StructureTemplate.placeInWorld` does with the block entity a template
+/// block lands on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplacedEntity {
+    /// Saved data over a block that changes: the entity it replaces is cleared
+    /// first (without side effects), then the saved data is loaded.
+    ClearThenLoad,
+    /// The same state is already there: `setBlock` reports no change, so the
+    /// entity stays as it is and the saved data is not loaded.
+    Keep,
+    /// No saved data: the block change itself handles the entity.
+    None,
+}
+
+fn replaced_entity(has_saved_data: bool, unchanged: bool) -> ReplacedEntity {
+    match (has_saved_data, unchanged) {
+        (false, _) => ReplacedEntity::None,
+        (true, true) => ReplacedEntity::Keep,
+        (true, false) => ReplacedEntity::ClearThenLoad,
+    }
+}
+
 impl Game<'_> {
     fn state_transforms(&self) -> Option<&'static StateTransforms> {
         static TRANSFORMS: OnceLock<Option<StateTransforms>> = OnceLock::new();
@@ -235,10 +257,20 @@ impl Game<'_> {
                 continue;
             }
             let state = transforms.rotate(transforms.mirror(b.state, mirror), rotation);
+            let key = (at[0], at[1], at[2]);
+            let unchanged = self.world.block(at[0], at[1], at[2]) == state;
+            // The replaced entity is cleared before the new block lands, so a
+            // chest written over another chest keeps only the template's data
+            // and a jukebox stops its song.
+            let entry = replaced_entity(b.nbt.is_some(), unchanged);
+            if entry == ReplacedEntity::ClearThenLoad {
+                self.jukebox_removed(at);
+                self.world.block_entities.remove(&key);
+            }
             if self.place_state(at, state, strict).is_ok() {
                 placed += 1;
             }
-            if let Some(data) = &b.nbt {
+            if let (ReplacedEntity::ClearThenLoad, Some(data)) = (entry, &b.nbt) {
                 let mut tag = Tag::Compound(data.clone());
                 if let Tag::Compound(c) = &mut tag {
                     c.insert("x".into(), Tag::Int(at[0]));
@@ -246,7 +278,6 @@ impl Game<'_> {
                     c.insert("z".into(), Tag::Int(at[2]));
                 }
                 if let Some((_, entity)) = save::decode_block_entity(&tag) {
-                    let key = (at[0], at[1], at[2]);
                     self.world.block_entities.insert(key, entity);
                     self.update_spawner_display(key);
                 }
@@ -278,5 +309,52 @@ impl Game<'_> {
             &[Text::literal(id), num(pos[0]), num(pos[1]), num(pos[2])],
         ));
         Ok(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_client::containers::BlockEntity;
+
+    /// A template block with saved data over a block that changes clears the
+    /// entity it replaces; over the same state it keeps the entity already
+    /// there, as `setBlock` reports no change (fixes #3708).
+    #[test]
+    fn replaced_entity_follows_place_in_world() {
+        assert_eq!(replaced_entity(true, false), ReplacedEntity::ClearThenLoad);
+        assert_eq!(replaced_entity(true, true), ReplacedEntity::Keep);
+        assert_eq!(replaced_entity(false, false), ReplacedEntity::None);
+        assert_eq!(replaced_entity(false, true), ReplacedEntity::None);
+    }
+
+    /// The saved data of a template block lands as its own entity: what a
+    /// chest at that position held before is not merged into it (#3708).
+    #[test]
+    fn template_chest_lands_with_its_own_contents() {
+        let mut saved = horizon_world::nbt::Compound::default();
+        saved.insert("id".into(), Tag::String("minecraft:chest".into()));
+        saved.insert("x".into(), Tag::Int(1));
+        saved.insert("y".into(), Tag::Int(64));
+        saved.insert("z".into(), Tag::Int(2));
+        let mut items = vec![horizon_world::nbt::Compound::default()];
+        items[0].insert("Slot".into(), Tag::Byte(3));
+        items[0].insert("id".into(), Tag::String("minecraft:diamond".into()));
+        items[0].insert("count".into(), Tag::Int(2));
+        saved.insert(
+            "Items".into(),
+            Tag::List(items.into_iter().map(Tag::Compound).collect()),
+        );
+        let (_, placed) = save::decode_block_entity(&Tag::Compound(saved)).expect("template chest");
+        let BlockEntity::Chest(chest) = &placed else {
+            panic!("template chest decodes to a chest");
+        };
+        assert_eq!(chest.len(), 27);
+        let Some(diamond) = chest[3].as_ref() else {
+            panic!("the template's stack is in slot 3");
+        };
+        assert_eq!(&*diamond.item, "minecraft:diamond");
+        assert_eq!(diamond.count, 2);
+        assert!(chest.iter().enumerate().all(|(i, s)| i == 3 || s.is_none()));
     }
 }
