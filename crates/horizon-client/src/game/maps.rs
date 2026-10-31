@@ -7,6 +7,7 @@
 use super::{Game, lan::LanHost};
 use horizon_client::{
     blocks::{Fluid, MAP_COLORS},
+    containers::BlockEntity,
     hud::{MAP_SLOTS, Rect},
     items::ItemStack,
     mesher::Vertex,
@@ -23,6 +24,9 @@ pub(super) struct Decoration {
     pub y: i8,
     pub rot: u8,
     pub holder: Option<u32>,
+    /// The banner block a `MapBanner` marker stands for: the marker only
+    /// leaves with the banner (a toggle, or the sweep's `checkBanners`).
+    pub banner: Option<[i32; 3]>,
 }
 /// The host among a map's holders (the guests are their connections).
 const HOST: u32 = u32::MAX;
@@ -169,6 +173,101 @@ impl MapData {
             self.decorations_changed();
         }
     }
+    /// The tracked decorations (`MapDecorationType.trackCount`): players,
+    /// frames, markers and banners, capped at 256 (`isTrackedCountOverLimit`).
+    fn tracked_decoration_count(&self) -> usize {
+        self.decorations
+            .iter()
+            .filter(|d| track_count(d.sprite))
+            .count()
+    }
+    /// `MapItemSavedData.toggleBanner`: a banner inside the map's bounds is
+    /// marked (a `MapBanner` entry and its decoration, rotated 180); marking
+    /// the same banner again — the same pos, dye and name — takes the marker
+    /// off. False when the banner is outside the map or the tracked
+    /// decorations are at their limit (the use FAILs). The toggle uses the
+    /// banner's centre (`pos + 0.5`), as `toggleBanner` does.
+    fn toggle_banner(
+        &mut self,
+        pos: [i32; 3],
+        color: &str,
+        name: Option<&str>,
+        nether: bool,
+        game_time: i64,
+    ) -> bool {
+        let s = f64::from(1 << self.scale);
+        let xd = (f64::from(pos[0]) + 0.5 - f64::from(self.center[0])) / s;
+        let yd = (f64::from(pos[2]) + 0.5 - f64::from(self.center[1])) / s;
+        if !(-63.0..=63.0).contains(&xd) || !(-63.0..=63.0).contains(&yd) {
+            return false;
+        }
+        let Some(sprite) = banner_sprite(color) else {
+            return false;
+        };
+        if let Some(i) = self.banners.iter().position(|t| {
+            banner_marker(t).is_some_and(|(p, c, n)| p == pos && c == color && n.as_deref() == name)
+        }) {
+            self.banners.remove(i);
+            self.decorations.retain(|d| d.banner != Some(pos));
+            self.decorations_changed();
+            self.dirty = true;
+            return true;
+        }
+        if self.tracked_decoration_count() >= 256 {
+            return false;
+        }
+        // `bannerMarkers` is keyed by the banner's pos: the put replaces any
+        // other marker there (the banner was renamed or dyed).
+        self.drop_banner_marker(pos);
+        self.banners.push(banner_tag(pos, color, name));
+        let s = (1i32 << self.scale) as f32;
+        let dx = ((f64::from(pos[0]) + 0.5 - f64::from(self.center[0])) as f32) / s;
+        let dz = ((f64::from(pos[2]) + 0.5 - f64::from(self.center[1])) as f32) / s;
+        self.decorations.push(Decoration {
+            sprite,
+            x: clamp_map_coordinate(dx),
+            y: clamp_map_coordinate(dz),
+            rot: decoration_rotation(nether, game_time, 180.0),
+            holder: None,
+            banner: Some(pos),
+        });
+        self.decorations_changed();
+        self.dirty = true;
+        true
+    }
+    /// Takes a `MapBanner` marker and its decoration off the map.
+    fn drop_banner_marker(&mut self, pos: [i32; 3]) {
+        let before = self.banners.len();
+        self.banners
+            .retain(|t| banner_marker(t).is_none_or(|(p, ..)| p != pos));
+        if self.banners.len() != before {
+            self.decorations.retain(|d| d.banner != Some(pos));
+            self.decorations_changed();
+            self.dirty = true;
+        }
+    }
+    /// The constructor's banner pass: every saved `MapBanner` marks again
+    /// (`addDecoration` at the plain block pos, with a null level: rotation
+    /// 8), without the 256 limit.
+    fn rebuild_banner_decorations(&mut self) {
+        let s = (1i32 << self.scale) as f32;
+        let banners = self.banners.clone();
+        for (pos, color, _) in banners.iter().filter_map(banner_marker) {
+            let Some(sprite) = banner_sprite(&color) else {
+                continue;
+            };
+            let dx = ((f64::from(pos[0]) - f64::from(self.center[0])) as f32) / s;
+            let dz = ((f64::from(pos[2]) - f64::from(self.center[1])) as f32) / s;
+            self.decorations.push(Decoration {
+                sprite,
+                x: clamp_map_coordinate(dx),
+                y: clamp_map_coordinate(dz),
+                rot: decoration_rotation(false, 0, 180.0),
+                holder: None,
+                banner: Some(pos),
+            });
+        }
+    }
     /// `HoldingPlayer.nextUpdatePacket` for `who`: the changed pixels, and
     /// the decorations (at most every 5th call while they changed).
     fn update_packet(
@@ -267,7 +366,7 @@ impl MapData {
             Some(Tag::List(l)) => l.clone(),
             _ => Vec::new(),
         };
-        Some(Self {
+        let mut m = Self {
             center: [int("xCenter")?, int("zCenter")?],
             scale: int("scale").unwrap_or(0).clamp(0, 4) as u8,
             dimension,
@@ -281,7 +380,9 @@ impl MapData {
             holders: Vec::new(),
             dirty: false,
             texture_dirty: true,
-        })
+        };
+        m.rebuild_banner_decorations();
+        Some(m)
     }
 }
 pub(super) struct Maps {
@@ -319,7 +420,7 @@ pub(super) fn map_id(stack: &ItemStack) -> Option<i32> {
     stack.data().and_then(|d| d.map_id)
 }
 /// `MapDecorationTypes` Horizon draws: (type, sprite).
-const DECORATION_TYPES: [(&str, &str); 24] = [
+const DECORATION_TYPES: [(&str, &str); 40] = [
     ("player", "map/decorations/player"),
     ("frame", "map/decorations/frame"),
     ("red_marker", "map/decorations/red_marker"),
@@ -330,6 +431,22 @@ const DECORATION_TYPES: [(&str, &str); 24] = [
     ("player_off_limits", "map/decorations/player_off_limits"),
     ("mansion", "map/decorations/woodland_mansion"),
     ("monument", "map/decorations/ocean_monument"),
+    ("banner_white", "map/decorations/white_banner"),
+    ("banner_orange", "map/decorations/orange_banner"),
+    ("banner_magenta", "map/decorations/magenta_banner"),
+    ("banner_light_blue", "map/decorations/light_blue_banner"),
+    ("banner_yellow", "map/decorations/yellow_banner"),
+    ("banner_lime", "map/decorations/lime_banner"),
+    ("banner_pink", "map/decorations/pink_banner"),
+    ("banner_gray", "map/decorations/gray_banner"),
+    ("banner_light_gray", "map/decorations/light_gray_banner"),
+    ("banner_cyan", "map/decorations/cyan_banner"),
+    ("banner_purple", "map/decorations/purple_banner"),
+    ("banner_blue", "map/decorations/blue_banner"),
+    ("banner_brown", "map/decorations/brown_banner"),
+    ("banner_green", "map/decorations/green_banner"),
+    ("banner_red", "map/decorations/red_banner"),
+    ("banner_black", "map/decorations/black_banner"),
     ("red_x", "map/decorations/red_x"),
     ("village_desert", "map/decorations/desert_village"),
     ("village_plains", "map/decorations/plains_village"),
@@ -453,6 +570,113 @@ fn decoration_rotation(nether: bool, game_time: i64, y_rot: f64) -> u8 {
         ((adjusted * 16.0 / 360.0) as i32 & 15) as u8
     }
 }
+/// `MapDecorationType.trackCount` is true for the player and frame arrows,
+/// the four markers and the banners; targets and structures do not count
+/// towards the 256 decoration limit.
+fn track_count(sprite: &str) -> bool {
+    matches!(
+        decoration_type(sprite),
+        Some(name)
+            if matches!(
+                name,
+                "player"
+                    | "frame"
+                    | "red_marker"
+                    | "blue_marker"
+                    | "player_off_map"
+                    | "player_off_limits"
+            ) || name.starts_with("banner_")
+    )
+}
+/// A saved `MapBanner` marker: its block pos, dye colour and custom name.
+fn banner_marker(tag: &Tag) -> Option<([i32; 3], String, Option<String>)> {
+    let pos = match tag.get("pos") {
+        Some(Tag::List(l)) => {
+            let mut p = [0i32; 3];
+            for (i, v) in p.iter_mut().enumerate() {
+                *v = match l.get(i) {
+                    Some(Tag::Int(v)) => *v,
+                    _ => return None,
+                };
+            }
+            p
+        }
+        Some(Tag::IntArray(a)) if a.len() == 3 => [a[0], a[1], a[2]],
+        _ => return None,
+    };
+    let color = match tag.get("color") {
+        Some(Tag::String(s)) => s.to_string_lossy(),
+        _ => "white".to_owned(),
+    };
+    // A name only counts as one Horizon can compare: the plain string a
+    // `CustomName` decodes to (as `text` reads it), never a full component.
+    let name = match tag.get("name") {
+        Some(Tag::String(s)) => Some(s.to_string_lossy()),
+        _ => None,
+    };
+    Some((pos, color, name))
+}
+/// The saved tag for a `MapBanner` marker, in the codec's shape: the pos
+/// list, the dye unless it is white, and the name.
+fn banner_tag(pos: [i32; 3], color: &str, name: Option<&str>) -> Tag {
+    let mut c: Vec<(&str, Tag)> = vec![("pos", Tag::List(pos.into_iter().map(Tag::Int).collect()))];
+    if color != "white" {
+        c.push(("color", Tag::String(color.into())));
+    }
+    if let Some(name) = name {
+        c.push(("name", Tag::String(name.into())));
+    }
+    Tag::compound(c)
+}
+/// The sprite of a banner dye's decoration (`MapBanner.getDecoration`).
+fn banner_sprite(color: &str) -> Option<&'static str> {
+    decoration_sprite(&format!("banner_{color}"))
+}
+/// The dye of a banner block's name (`white_banner`, `lime_wall_banner`).
+fn banner_block_color(name: &str) -> Option<&str> {
+    let n = name.strip_prefix("minecraft:")?;
+    let color = n
+        .strip_suffix("_wall_banner")
+        .or(n.strip_suffix("_banner"))?;
+    matches!(
+        color,
+        "white"
+            | "orange"
+            | "magenta"
+            | "light_blue"
+            | "yellow"
+            | "lime"
+            | "pink"
+            | "gray"
+            | "light_gray"
+            | "cyan"
+            | "purple"
+            | "blue"
+            | "brown"
+            | "green"
+            | "red"
+            | "black"
+    )
+    .then_some(color)
+}
+/// `checkBanners` for one scanned column: the markers at (`x`, `z`) whose
+/// banner now reads differently (renamed, dyed, gone) leave the map.
+/// `current` reads the banner at a marker's pos as a `MapBanner` would.
+fn stale_banner_markers(
+    markers: &[([i32; 3], String, Option<String>)],
+    x: i32,
+    z: i32,
+    current: impl Fn([i32; 3]) -> Option<(String, Option<String>)>,
+) -> Vec<[i32; 3]> {
+    markers
+        .iter()
+        .filter(|(pos, ..)| pos[0] == x && pos[2] == z)
+        .filter_map(|(pos, color, name)| match current(*pos) {
+            Some((c, n)) if c == *color && n.as_deref() == name.as_deref() => None,
+            _ => Some(*pos),
+        })
+        .collect()
+}
 impl Game<'_> {
     fn dimension_id(&self) -> &'static str {
         match self.dim {
@@ -499,6 +723,7 @@ impl Game<'_> {
                         y: d.y,
                         rot: (d.rot & 15) as u8,
                         holder: None,
+                        banner: None,
                     })
                 })
                 .collect()
@@ -753,6 +978,52 @@ impl Game<'_> {
         self.swing_arm();
         true
     }
+    /// `MapItem.useOn`: a filled map used on a banner toggles the banner's
+    /// marker (`MapItemSavedData.toggleBanner`). The toggle refuses (a FAIL,
+    /// no swing) when the banner sits outside the map's bounds or the
+    /// tracked decorations are at their 256 limit; any other banner use
+    /// succeeds (the map's data need not exist). Nothing is consumed.
+    pub(super) fn use_map_on_banner(
+        &mut self,
+        pos: [i32; 3],
+        stack: &ItemStack,
+    ) -> horizon_client::Result<bool> {
+        let Some(id) = map_id(stack) else {
+            return Ok(false);
+        };
+        if !self.block_in_tag("minecraft:banners", &self.block_name(pos)) {
+            return Ok(false);
+        }
+        let Some((color, name)) = self.banner_at(pos) else {
+            // fromWorld: no banner block entity there, so toggleBanner is
+            // false and the use FAILs.
+            return Ok(true);
+        };
+        // getSavedData: a map whose data is gone still succeeds, marking
+        // nothing.
+        let (nether, game_time) = (self.dim == super::Dim::Nether, self.world.game_time);
+        let Some(m) = self.map(id) else {
+            return Ok(true);
+        };
+        if !m.toggle_banner(pos, &color, name.as_deref(), nether, game_time) {
+            return Ok(true);
+        }
+        // ServerPlayerGameMode.useItemOn: a consuming useOn triggers
+        // ITEM_USED_ON_BLOCK.
+        self.trigger_block("minecraft:item_used_on_block", pos, stack);
+        self.swing_arm();
+        Ok(true)
+    }
+    /// The banner at `pos` as a `MapBanner` reads it: the dye of its block
+    /// and its custom name. None without a banner block entity there.
+    fn banner_at(&self, pos: [i32; 3]) -> Option<(String, Option<String>)> {
+        let block = self.block_name(pos);
+        let color = banner_block_color(&block)?;
+        match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+            Some(BlockEntity::Banner(b)) => Some((color.to_owned(), b.name.clone())),
+            _ => None,
+        }
+    }
     /// `CompassItem.useOn`: a compass used on a lodestone locks onto it (a
     /// single one in survival changes in place, else one is split off).
     pub(super) fn use_lodestone_compass(&mut self, hit: &super::Hit, stack: &ItemStack) -> bool {
@@ -918,6 +1189,7 @@ impl Game<'_> {
                     y: clamp(dz),
                     rot,
                     holder: Some(me),
+                    banner: None,
                 });
             }
             m.set_marker(me, marker);
@@ -938,6 +1210,7 @@ impl Game<'_> {
                     y: clamp_map_coordinate(dz),
                     rot: decoration_rotation(nether, game_time, f64::from(rotation)),
                     holder: None,
+                    banner: None,
                 };
                 if !items.contains(&d) {
                     items.push(d);
@@ -946,10 +1219,11 @@ impl Game<'_> {
             if !m
                 .decorations
                 .iter()
-                .filter(|d| d.holder.is_none())
+                .filter(|d| d.holder.is_none() && d.banner.is_none())
                 .eq(items.iter())
             {
-                m.decorations.retain(|d| d.holder.is_some());
+                m.decorations
+                    .retain(|d| d.holder.is_some() || d.banner.is_some());
                 m.decorations.extend(items);
                 m.decorations_changed();
             }
@@ -1050,7 +1324,10 @@ impl Game<'_> {
         let h = m.holder(self.lan_acting.unwrap_or(HOST));
         h.step += 1;
         let step = h.step;
+        let markers: Vec<([i32; 3], String, Option<String>)> =
+            m.banners.iter().filter_map(banner_marker).collect();
         let mut changes: Vec<(i32, i32, u8)> = Vec::new();
+        let mut stale: Vec<[i32; 3]> = Vec::new();
         let mut consecutive = false;
         for img_x in px - radius + 1..px + radius {
             if (img_x & 15) != (step & 15) && !consecutive {
@@ -1093,6 +1370,9 @@ impl Game<'_> {
                     for dx in 0..scale {
                         for dz in 0..scale {
                             let (x, z) = (min_x + dx, min_z + dz);
+                            stale.extend(stale_banner_markers(&markers, x, z, |pos| {
+                                self.banner_at(pos)
+                            }));
                             let mut y = self.world_surface(x, z);
                             let min_y = self.world.bottom_y();
                             let mut color;
@@ -1169,6 +1449,11 @@ impl Game<'_> {
             if let Some(m) = self.maps.data.get_mut(&id) {
                 for (x, y, c) in changes.drain(..) {
                     consecutive |= m.update_color(x, y, c);
+                }
+                stale.sort_unstable();
+                stale.dedup();
+                for pos in stale.drain(..) {
+                    m.drop_banner_marker(pos);
                 }
             }
         }
@@ -1425,5 +1710,170 @@ mod tests {
         assert_eq!(decoration_rotation(false, 0, -90.0), 12);
         assert_eq!(clamp_map_coordinate(-70.0), -128);
         assert_eq!(clamp_map_coordinate(10.25), 21);
+    }
+
+    #[test]
+    fn every_banner_dye_has_its_decoration_sprite() {
+        // MapDecorationTypes: the registry name is banner_<dye>, the asset
+        // <dye>_banner.
+        for dye in [
+            "white",
+            "orange",
+            "magenta",
+            "light_blue",
+            "yellow",
+            "lime",
+            "pink",
+            "gray",
+            "light_gray",
+            "cyan",
+            "purple",
+            "blue",
+            "brown",
+            "green",
+            "red",
+            "black",
+        ] {
+            assert_eq!(
+                banner_sprite(dye),
+                Some(format!("map/decorations/{dye}_banner").as_str()),
+                "{dye}"
+            );
+        }
+        assert_eq!(banner_sprite("chartreuse"), None);
+    }
+
+    #[test]
+    fn a_banner_toggle_marks_and_remarks() {
+        let mut m = MapData::fresh(0.0, 0.0, 0, "minecraft:overworld");
+        assert!(m.toggle_banner([8, 64, -4], "lime", Some("Flag"), false, 0));
+        assert_eq!(m.banners.len(), 1);
+        assert_eq!(
+            banner_marker(&m.banners[0]).as_ref().map(|b| &b.0),
+            Some(&[8, 64, -4])
+        );
+        // The toggle's decoration sits at the banner's centre: x (8.5 * 2 +
+        // 0.5) = 17, y (-3.5 * 2 + 0.5) = -6, rotation 8 (180).
+        assert_eq!(
+            m.decorations,
+            vec![Decoration {
+                sprite: "map/decorations/lime_banner",
+                x: 17,
+                y: -6,
+                rot: 8,
+                holder: None,
+                banner: Some([8, 64, -4]),
+            }]
+        );
+        // The same banner (the same pos, dye and name) toggles the marker
+        // off; a renamed banner replaces the marker instead.
+        assert!(m.toggle_banner([8, 64, -4], "lime", Some("Flag"), false, 0));
+        assert!(m.banners.is_empty() && m.decorations.is_empty());
+        assert!(m.toggle_banner([8, 64, -4], "lime", Some("Renamed"), false, 0));
+        assert_eq!(m.banners.len(), 1);
+        assert_eq!(
+            banner_marker(&m.banners[0]).map(|(_, _, n)| n),
+            Some(Some("Renamed".to_owned()))
+        );
+        // A marker carries its name and non-white dye through the save.
+        assert_eq!(
+            banner_marker(&banner_tag([8, 64, -4], "lime", Some("Renamed"))),
+            Some(([8, 64, -4], "lime".to_owned(), Some("Renamed".to_owned())))
+        );
+        assert_eq!(
+            banner_marker(&banner_tag([0, 0, 0], "white", None)),
+            Some(([0, 0, 0], "white".to_owned(), None))
+        );
+    }
+
+    #[test]
+    fn a_banner_outside_the_map_refuses_to_toggle() {
+        let mut m = MapData::fresh(0.0, 0.0, 0, "minecraft:overworld");
+        // Scale 0 spans 64 blocks from the centre; 70 does not fit.
+        assert!(!m.toggle_banner([70, 64, 0], "white", None, false, 0));
+        assert!(!m.toggle_banner([0, 64, -70], "white", None, false, 0));
+        assert!(m.banners.is_empty() && m.decorations.is_empty());
+        // The centre test is on the banner's centre: 62.5 fits, 63.5 does not.
+        assert!(m.toggle_banner([62, 64, -62], "white", None, false, 0));
+        assert_eq!(m.banners.len(), 1);
+    }
+
+    #[test]
+    fn saved_banners_mark_again_on_load() {
+        let mut m = MapData::fresh(0.0, 0.0, 0, "minecraft:overworld");
+        assert!(m.toggle_banner([8, 64, -4], "lime", Some("Flag"), false, 0));
+        let saved = MapData::from_nbt(&m.to_nbt()).unwrap();
+        // Saved banners keep their tag and mark again, at the plain block
+        // pos (x * 2 + 0.5 = 16, y = -7) with the null level's rotation 8.
+        assert_eq!(saved.banners.len(), 1);
+        assert_eq!(
+            saved.decorations,
+            vec![Decoration {
+                sprite: "map/decorations/lime_banner",
+                x: 16,
+                y: -7,
+                rot: 8,
+                holder: None,
+                banner: Some([8, 64, -4]),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_sweep_takes_a_marker_whose_banner_changed() {
+        let markers = [([3, 64, 3], "white".to_owned(), None)];
+        // The banner still there, renamed: the marker leaves either way.
+        assert_eq!(
+            stale_banner_markers(&markers, 3, 3, |_| {
+                Some(("white".to_owned(), Some("Now".to_owned())))
+            }),
+            vec![[3, 64, 3]]
+        );
+        assert_eq!(
+            stale_banner_markers(&markers, 3, 3, |_| None),
+            vec![[3, 64, 3]]
+        );
+        // Unchanged banner, or another column: the marker stays.
+        assert!(
+            stale_banner_markers(&markers, 3, 3, |_| { Some(("white".to_owned(), None)) })
+                .is_empty()
+        );
+        assert!(stale_banner_markers(&markers, 4, 3, |_| None).is_empty());
+    }
+
+    #[test]
+    fn tracked_decorations_cap_at_256() {
+        let mut m = MapData::fresh(0.0, 0.0, 4, "minecraft:overworld");
+        // The scale-4 map is centred on (960, 960) and spans 63 * 16 blocks
+        // around it; these all fit, each on its own pos.
+        for i in 0..256i32 {
+            assert!(m.toggle_banner([-48 + i * 4, 64, 960], "white", None, false, 0));
+        }
+        assert_eq!(m.tracked_decoration_count(), 256);
+        assert!(!m.toggle_banner([-48 + 256 * 4, 64, 960], "white", None, false, 0));
+        // A target (a structure's decoration) does not count towards it.
+        m.decorations.push(Decoration {
+            sprite: "map/decorations/red_x",
+            x: 0,
+            y: 0,
+            rot: 8,
+            holder: None,
+            banner: None,
+        });
+        assert_eq!(m.tracked_decoration_count(), 256);
+    }
+
+    #[test]
+    fn banner_blocks_name_their_dye() {
+        assert_eq!(banner_block_color("minecraft:white_banner"), Some("white"));
+        assert_eq!(
+            banner_block_color("minecraft:lime_wall_banner"),
+            Some("lime")
+        );
+        assert_eq!(banner_block_color("minecraft:stone"), None);
+        assert_eq!(
+            banner_block_color("minecraft:light_gray_banner"),
+            Some("light_gray")
+        );
     }
 }

@@ -240,6 +240,7 @@ mod tests {
             y,
             rot,
             holder: None,
+            banner: None,
         };
         // The centre, facing north: 8 map pixels wide, nudged by (-0.5, 0.5).
         close(

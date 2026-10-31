@@ -5290,6 +5290,13 @@ impl Game<'_> {
         {
             return Ok(true);
         }
+        // MapItem.useOn: a filled map on a banner toggles the banner's
+        // marker (a guest's UseItemOn reaches it too).
+        if let Some(hit) = block_hit
+            && self.use_map_on_banner(hit.pos, &stack)?
+        {
+            return Ok(true);
+        }
         if (!on_block && self.use_potion_item(&stack)?)
             || ((block_hit.is_some() || !spawn_egg)
                 && (!on_block || spawn_egg)
