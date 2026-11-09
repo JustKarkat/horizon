@@ -12805,6 +12805,13 @@ impl ApplicationHandler for Game<'_> {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        // Handle file drops for resource packs (drag and drop onto the window).
+        if let WindowEvent::DroppedFile(path) = &event {
+            if let Err(e) = self.handle_dropped_file(path) {
+                log::warn!("Horizon: failed to handle dropped file: {e}");
+            }
+            return;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
         {

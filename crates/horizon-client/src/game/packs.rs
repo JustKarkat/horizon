@@ -1,7 +1,7 @@
 //! Resource pack selection bound to the game: the pack screen lists, and a
 //! full resource reload after a change, while playing.
 use super::{
-    Game, PackResources, Resources, UiResources, build_renderer, prepare_renderer_textures,
+    Game, PackResources, Resources, UiResources, Screen, build_renderer, prepare_renderer_textures,
 };
 use horizon_client::{
     assets::Assets,
@@ -130,6 +130,77 @@ impl Game<'_> {
         o.pack_infos = infos;
         o.pack_selection = self.settings.resource_packs.clone();
         o.pack_screen = None;
+    }
+    /// Handle a file dropped onto the window: if it's a resource pack
+    /// (.zip file or folder with pack.mcmeta), copy it to the resourcepacks
+    /// folder and refresh the pack list.
+    pub(super) fn handle_dropped_file(&mut self, path: &Path) -> std::io::Result<()> {
+        use std::fs;
+        let packs_dir = packs_dir();
+        if !packs_dir.exists() {
+            fs::create_dir_all(&packs_dir)?;
+        }
+        // Check if it's a valid resource pack: .zip file or folder with pack.mcmeta
+        let is_pack = if path.is_file() {
+            path.extension().is_some_and(|ext| ext == "zip")
+        } else if path.is_dir() {
+            path.join("pack.mcmeta").exists()
+        } else {
+            false
+        };
+        if !is_pack {
+            log::info!("Horizon: dropped file is not a resource pack: {}", path.display());
+            return Ok(());
+        }
+        // Determine the destination name (use the file/folder name)
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("pack");
+        let dest = packs_dir.join(name);
+        // If it already exists, append a number
+        let mut dest = dest;
+        let mut counter = 1;
+        while dest.exists() {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("pack");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let new_name = if ext.is_empty() {
+                format!("{stem} ({counter})")
+            } else {
+                format!("{stem} ({counter}).{ext}")
+            };
+            dest = packs_dir.join(new_name);
+            counter += 1;
+        }
+        // Copy the file/folder to the resourcepacks directory
+        if path.is_file() {
+            fs::copy(path, &dest).map(|_| ())
+        } else {
+            fs::create_dir_all(&dest)?;
+            Self::copy_dir_all(path, &dest)
+        }?;
+        log::info!("Horizon: added resource pack from {}", path.display());
+        self.refresh_pack_lists();
+        // If the pack screen is open, we need to refresh it
+        if self.screen == Screen::Options {
+            self.ui.options.pack_screen = None;
+        }
+        Ok(())
+    }
+    fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+        use std::fs;
+        if !dst.exists() {
+            fs::create_dir_all(dst)?;
+        }
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if ty.is_dir() {
+                Self::copy_dir_all(&src_path, &dst_path)?;
+            } else {
+                fs::copy(&src_path, &dst_path)?;
+            }
+        }
+        Ok(())
     }
     /// `Minecraft.reloadResourcePacks`: rebuild the overlay and reload every
     /// client resource from it, as vanilla's reload listeners do: block
