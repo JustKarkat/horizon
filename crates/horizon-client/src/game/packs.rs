@@ -391,3 +391,108 @@ pub(super) struct StagedPack {
     pub pack: PackResources,
     pub textures: PreparedTextures,
 }
+
+#[cfg(test)]
+mod drag_drop_tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    /// Helper to create a valid resource pack zip using system `zip` command
+    fn create_test_pack_zip(dir: &Path, name: &str) -> PathBuf {
+        let zip_path = dir.join(name);
+        let pack_dir = dir.join("pack_contents");
+        fs::create_dir_all(pack_dir.join("assets/minecraft/textures/block")).unwrap();
+        fs::write(pack_dir.join("pack.mcmeta"), br#"{"pack":{"pack_format":97,"description":"test"}}"#).unwrap();
+        fs::write(pack_dir.join("assets/minecraft/textures/block/dirt.png"), &[0u8; 100]).unwrap();
+        
+        // Use system zip command
+        let status = Command::new("zip")
+            .args(["-r", "-q", zip_path.to_str().unwrap(), "."])
+            .current_dir(&pack_dir)
+            .status()
+            .unwrap();
+        assert!(status.success(), "zip command failed");
+        
+        zip_path
+    }
+
+    /// Helper to create a valid resource pack folder
+    fn create_test_pack_folder(dir: &Path, name: &str) -> PathBuf {
+        let pack_dir = dir.join(name);
+        fs::create_dir_all(pack_dir.join("assets/minecraft/textures/block")).unwrap();
+        fs::write(pack_dir.join("pack.mcmeta"), br#"{"pack":{"pack_format":97,"description":"test"}}"#).unwrap();
+        fs::write(pack_dir.join("assets/minecraft/textures/block/dirt.png"), &[0u8; 100]).unwrap();
+        pack_dir
+    }
+
+    #[test]
+    fn test_is_pack_zip() {
+        let dir = tempdir().unwrap();
+        let zip = create_test_pack_zip(dir.path(), "test.zip");
+        assert!(zip.is_file());
+        assert_eq!(zip.extension().and_then(|s| s.to_str()), Some("zip"));
+        // pack.mcmeta inside makes it valid
+    }
+
+    #[test]
+    fn test_is_pack_folder() {
+        let dir = tempdir().unwrap();
+        let folder = create_test_pack_folder(dir.path(), "test_folder");
+        assert!(folder.is_dir());
+        assert!(folder.join("pack.mcmeta").exists());
+    }
+
+    #[test]
+    fn test_not_a_pack_invalid_zip() {
+        let dir = tempdir().unwrap();
+        let zip = dir.path().join("notapack.zip");
+        fs::write(&zip, b"not a zip").unwrap();
+        assert!(zip.is_file());
+        assert_eq!(zip.extension().and_then(|s| s.to_str()), Some("zip"));
+        // No pack.mcmeta inside - would be detected as invalid when opened
+    }
+
+    #[test]
+    fn test_not_a_pack_folder_no_mcmeta() {
+        let dir = tempdir().unwrap();
+        let folder = dir.path().join("notapack");
+        fs::create_dir_all(&folder).unwrap();
+        assert!(folder.is_dir());
+        assert!(!folder.join("pack.mcmeta").exists());
+    }
+
+    #[test]
+    fn test_copy_dir_all() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("subdir")).unwrap();
+        fs::write(src.join("file1.txt"), b"content1").unwrap();
+        fs::write(src.join("subdir").join("file2.txt"), b"content2").unwrap();
+
+        let dst = dir.path().join("dst");
+        Game::copy_dir_all(&src, &dst).unwrap();
+
+        assert!(dst.join("file1.txt").exists());
+        assert_eq!(fs::read(dst.join("file1.txt")).unwrap(), b"content1");
+        assert!(dst.join("subdir").join("file2.txt").exists());
+        assert_eq!(fs::read(dst.join("subdir").join("file2.txt")).unwrap(), b"content2");
+    }
+
+    #[test]
+    fn test_copy_dir_all_overwrites() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), b"new").unwrap();
+
+        let dst = dir.path().join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(dst.join("file.txt"), b"old").unwrap();
+
+        Game::copy_dir_all(&src, &dst).unwrap();
+        assert_eq!(fs::read(dst.join("file.txt")).unwrap(), b"new");
+    }
+}

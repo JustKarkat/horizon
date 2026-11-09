@@ -12809,6 +12809,7 @@ impl ApplicationHandler for Game<'_> {
         // screen is open (Options -> Packs), to avoid interfering with data pack
         // drops on the Create New World screen (title.drop_file).
         if let WindowEvent::DroppedFile(path) = &event {
+            log::info!("Horizon: DroppedFile event received: {}", path.display());
             if self.screen == Screen::Options
                 && self.ui.options.page() == horizon_client::options_ui::Page::Packs
             {
@@ -12817,6 +12818,12 @@ impl ApplicationHandler for Game<'_> {
                 }
             }
             return;
+        }
+        if let WindowEvent::HoveredFile(path) = &event {
+            log::info!("Horizon: HoveredFile event received: {}", path.display());
+        }
+        if let WindowEvent::HoveredFileCancelled = &event {
+            log::info!("Horizon: HoveredFileCancelled event received");
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
