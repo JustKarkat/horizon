@@ -12805,10 +12805,16 @@ impl ApplicationHandler for Game<'_> {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
-        // Handle file drops for resource packs (drag and drop onto the window).
+        // Handle file drops for resource packs: only when the resource pack
+        // screen is open (Options -> Packs), to avoid interfering with data pack
+        // drops on the Create New World screen (title.drop_file).
         if let WindowEvent::DroppedFile(path) = &event {
-            if let Err(e) = self.handle_dropped_file(path) {
-                log::warn!("Horizon: failed to handle dropped file: {e}");
+            if self.screen == Screen::Options
+                && self.ui.options.page() == horizon_client::options_ui::Page::Packs
+            {
+                if let Err(e) = self.handle_dropped_file(path) {
+                    log::warn!("Horizon: failed to handle dropped file: {e}");
+                }
             }
             return;
         }
